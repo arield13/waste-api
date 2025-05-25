@@ -1,4 +1,12 @@
-venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+
+# Virtual environments
+venv/
 .env
+
+# Logs and other artifacts
+*.log
+uploads/
