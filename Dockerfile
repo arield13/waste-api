@@ -1,26 +1,28 @@
-FROM python:3.10-alpine
+FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install build dependencies using apk (Alpine package manager)
-RUN apk add --no-cache \
-    gcc \
-    musl-dev \
-    libjpeg-turbo-dev \
-    zlib-dev \
-    libpng \
-    libxrender \
-    libsm \
-    libxext
+# Install required system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python packages
+# Upgrade pip (helps avoid version conflicts)
+RUN pip install --upgrade pip
+
+# Install only what is needed
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app source code
+# Copy app files
 COPY . .
 
-# Use Railway's PORT env variable (fallback to 8080)
+# Use Railway's PORT env variable
 ENV PORT=8080
 EXPOSE $PORT
 
