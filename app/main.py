@@ -1,18 +1,32 @@
-import os
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from app.detect import detect_and_classify
-from app.db import get_connection
+from fastapi.responses import FileResponse
+from ultralytics import YOLO
+from pathlib import Path
 from datetime import datetime
-import shutil
+import os
+import cv2
 import uuid
-import uvicorn
+import numpy as np
+import psycopg2
+import shutil
 
+# --- CONFIGURATION
 UPLOAD_FOLDER = "uploads"
+OUTPUT_FOLDER = "output"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+WEIGHTS_PATH = "weights/best.pt"
 
+RECYCLABLE = ['cardboard_box', 'can', 'plastic_bottle_cap', 'plastic_bottle', 'reuseable_paper']
+NON_RECYCLABLE = ['plastic_bag', 'scrap_paper', 'stick', 'plastic_cup', 'snack_bag',
+                  'plastic_box', 'straw', 'plastic_cup_lid', 'scrap_plastic', 'cardboard_bowl', 'plastic_cultery']
+HAZARDOUS = ['battery', 'chemical_spray_can', 'chemical_plastic_bottle', 'chemical_plastic_gallon',
+             'light_bulb', 'paint_bucket']
+
+# --- Initialize app
 app = FastAPI()
+model = YOLO(WEIGHTS_PATH)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,16 +36,113 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"message": "Waste Detection API is running!"}
+# --- DB Connection (adjust credentials)
+def get_connection():
+    return psycopg2.connect(
+        dbname="railway",
+        user="postgres",
+        password="jmoKDpufnLxSCMgGkKqIgLiPyJQdyYBU",
+        host="tramway.proxy.rlwy.net",
+        port="44797"
+    )
 
-@app.post("/detect/")
-async def detect(file: UploadFile = File(...)):
-    image_bytes = await file.read()
-    result = detect_and_classify(image_bytes)
-    return {"detections": result}
+# --- Classification helper
+def classify(label):
+    if label in RECYCLABLE:
+        return 'Recyclable'
+    elif label in NON_RECYCLABLE:
+        return 'Non-Recyclable'
+    elif label in HAZARDOUS:
+        return 'Hazardous'
+    return 'Unknown'
 
+# --- Detection core
+def detect_and_classify_bytes(image_bytes):
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+    results = model.predict(img_rgb, verbose=False)[0]
+    detections = []
+
+    for box in results.boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        conf = float(box.conf[0])
+        cls_id = int(box.cls[0])
+        label = model.names[cls_id]
+        category = classify(label)
+
+        detections.append({
+            "label": label,
+            "category": category,
+            "confidence": round(conf, 2),
+            "bbox": [x1, y1, x2, y2]
+        })
+
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img_bgr, f"{label} ({category})", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    return img_bgr, detections
+
+# --- /process/ endpoint
+@app.post("/process/")
+async def process_image(
+    file: UploadFile = File(...),
+    user_id: int = Form(...),
+    lat: float = Form(...),
+    lng: float = Form(...),
+    address: str = Form(None)
+):
+    try:
+        image_bytes = await file.read()
+        filename = f"{uuid.uuid4().hex}_{file.filename}"
+        raw_path = os.path.join(UPLOAD_FOLDER, filename)
+
+        with open(raw_path, "wb") as f:
+            f.write(image_bytes)
+
+        img_bgr, detections = detect_and_classify_bytes(image_bytes)
+
+        # Save output image
+        annotated_path = os.path.join(OUTPUT_FOLDER, filename)
+        cv2.imwrite(annotated_path, img_bgr)
+
+        # Save to DB
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO pickup_spots 
+            (user_id, latitude, longitude, created_at, photo_url, address, is_disposed, points) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id;
+        """, (
+            user_id,
+            lat,
+            lng,
+            datetime.now(),
+            filename,
+            address,
+            False,
+            len(detections)
+        ))
+        pickup_id = cur.fetchone()[0]
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            "message": "Image processed successfully",
+            "pickup_id": pickup_id,
+            "detections": detections,
+            "annotated_image_url": f"/image/{filename}"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- /upload/ endpoint (raw upload without detection)
 @app.post("/upload/")
 async def upload_image(
     file: UploadFile = File(...),
@@ -55,14 +166,24 @@ async def upload_image(
         cur = conn.cursor()
 
         cur.execute("""
-            INSERT INTO pickup_spots (user_id, lat, lng, time, address, photo_path)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO pickup_spots 
+            (user_id, latitude, longitude, created_at, address, photo_url, is_disposed, points)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
-        """, (user_id, lat, lng, pickup_time, address, filename))
+        """, (
+            user_id,
+            lat,
+            lng,
+            pickup_time,
+            address,
+            filename,
+            False,
+            0
+        ))
+
 
         pickup_id = cur.fetchone()[0]
         conn.commit()
-
         cur.close()
         conn.close()
 
@@ -70,6 +191,7 @@ async def upload_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- /user_points/ endpoint
 @app.get("/user_points/{user_id}")
 def get_user_points(user_id: int):
     try:
@@ -79,11 +201,13 @@ def get_user_points(user_id: int):
         cur.execute("""
             SELECT SUM(points), json_agg(json_build_object(
                 'id', id,
-                'lat', lat,
-                'lng', lng,
+                'latitude', latitude,
+                'longitude', longitude,
                 'is_disposed', is_disposed,
-                'photo_path', photo_path,
-                'points', points
+                'photo_url', photo_url,
+                'points', points,
+                'address', address,
+                'created_at', created_at
             ))
             FROM pickup_spots
             WHERE user_id = %s;
@@ -100,6 +224,10 @@ def get_user_points(user_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
+# --- Serve annotated images
+@app.get("/image/{filename}")
+def get_image(filename: str):
+    file_path = os.path.join(OUTPUT_FOLDER, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(file_path)
