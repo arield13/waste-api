@@ -14,6 +14,8 @@ import shutil
 # --- CONFIGURATION
 UPLOAD_FOLDER = "uploads"
 OUTPUT_FOLDER = "output"
+TEMP_FOLDER = "temp"
+os.makedirs(TEMP_FOLDER, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 WEIGHTS_PATH = "weights/best.pt"
@@ -86,13 +88,9 @@ def detect_and_classify_bytes(image_bytes):
     return img_bgr, detections
 
 # --- /process/ endpoint
-@app.post("/process/")
-async def process_image(
+@app.post("/analyze-image/")
+async def analyze_image(
     file: UploadFile = File(...),
-    user_id: int = Form(...),
-    lat: float = Form(...),
-    lng: float = Form(...),
-    address: str = Form(None)
 ):
     try:
         image_bytes = await file.read()
@@ -104,9 +102,44 @@ async def process_image(
 
         img_bgr, detections = detect_and_classify_bytes(image_bytes)
 
-        # Save output image
-        annotated_path = os.path.join(OUTPUT_FOLDER, filename)
-        cv2.imwrite(annotated_path, img_bgr)
+        # Save annotated image to TEMP folder
+        temp_path = os.path.join(TEMP_FOLDER, filename)
+        cv2.imwrite(temp_path, img_bgr)
+
+        return {
+            "message": "Detection successful. Awaiting confirmation.",
+            "temp_filename": filename,
+            "detections": detections,
+            "preview_image_url": f"/temp_image/{filename}"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/confirm/")
+async def confirm_pickup(
+    temp_filename: str = Form(...),
+    user_id: int = Form(...),
+    lat: float = Form(...),
+    lng: float = Form(...),
+    address: str = Form(None)
+):
+    try:
+        temp_path = os.path.join(TEMP_FOLDER, temp_filename)
+        final_path = os.path.join(OUTPUT_FOLDER, temp_filename)
+
+        if not os.path.exists(temp_path):
+            raise HTTPException(status_code=404, detail="Temporary image not found")
+
+        # Move file to permanent folder
+        shutil.move(temp_path, final_path)
+
+        # Re-run detection to count points (optional; or return point count from /process/)
+        with open(os.path.join(UPLOAD_FOLDER, temp_filename), "rb") as f:
+            image_bytes = f.read()
+        _, detections = detect_and_classify_bytes(image_bytes)
 
         # Save to DB
         conn = get_connection()
@@ -121,7 +154,7 @@ async def process_image(
             lat,
             lng,
             datetime.now(),
-            filename,
+            temp_filename,
             address,
             False,
             len(detections)
@@ -133,14 +166,22 @@ async def process_image(
         conn.close()
 
         return {
-            "message": "Image processed successfully",
+            "message": "Pickup confirmed and saved",
             "pickup_id": pickup_id,
-            "detections": detections,
-            "annotated_image_url": f"/image/{filename}"
+            "points": len(detections)
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/temp_image/{filename}")
+def get_temp_image(filename: str):
+    file_path = os.path.join(TEMP_FOLDER, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(file_path)
+
 
 # --- /upload/ endpoint (raw upload without detection)
 @app.post("/upload/")
