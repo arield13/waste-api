@@ -49,15 +49,6 @@ def get_connection():
     )
 
 # --- Classification helper
-def classify(label):
-    if label in RECYCLABLE:
-        return 'Recyclable'
-    elif label in NON_RECYCLABLE:
-        return 'Non-Recyclable'
-    elif label in HAZARDOUS:
-        return 'Hazardous'
-    return 'Unknown'
-
 # --- Detection core
 def detect_and_classify_bytes(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -69,6 +60,14 @@ def detect_and_classify_bytes(image_bytes):
 
     for box in results.boxes:
         x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+        # Add padding around the box
+        padding = 10
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(img_bgr.shape[1], x2 + padding)
+        y2 = min(img_bgr.shape[0], y2 + padding)
+
         conf = float(box.conf[0])
         cls_id = int(box.cls[0])
         label = model.names[cls_id]
@@ -81,11 +80,18 @@ def detect_and_classify_bytes(image_bytes):
             "bbox": [x1, y1, x2, y2]
         })
 
-        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(img_bgr, f"{label} ({category})", (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        # Draw red bounding box with thickness 4
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 4)
+
+        # Draw label background and text
+        text = f"{label} ({category})"
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.rectangle(img_bgr, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 0, 255), -1)
+        cv2.putText(img_bgr, text, (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
     return img_bgr, detections
+
 
 # --- /process/ endpoint
 @app.post("/analyze-image/")
