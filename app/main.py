@@ -91,14 +91,14 @@ def detect_and_classify_bytes(image_bytes):
         })
 
         # Draw red bounding box with thickness 4
-        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 6)
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 20)
 
         # Draw label background and text
         text = f"{label} ({category})"
-        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1, 4)
         cv2.rectangle(img_bgr, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 0, 255), -1)
         cv2.putText(img_bgr, text, (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 6)
 
     return img_bgr, detections
 
