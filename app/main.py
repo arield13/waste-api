@@ -48,7 +48,17 @@ def get_connection():
         port="44797"
     )
 
+
 # --- Classification helper
+def classify(label):
+    if label in RECYCLABLE:
+        return 'Recyclable'
+    elif label in NON_RECYCLABLE:
+        return 'Non-Recyclable'
+    elif label in HAZARDOUS:
+        return 'Hazardous'
+    return 'Unknown'
+
 # --- Detection core
 def detect_and_classify_bytes(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -81,7 +91,7 @@ def detect_and_classify_bytes(image_bytes):
         })
 
         # Draw red bounding box with thickness 4
-        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 4)
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 6)
 
         # Draw label background and text
         text = f"{label} ({category})"
